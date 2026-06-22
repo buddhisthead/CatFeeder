@@ -1,0 +1,15 @@
+# Arduino build artifacts
+build/
+*.hex
+*.elf
+*.bin
+*.o
+*.a
+*.d
+
+# Arduino IDE / sketch metadata
+.vscode/
+*.tmp
+
+# macOS
+.DS_Store
