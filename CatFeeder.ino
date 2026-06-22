@@ -51,6 +51,13 @@
 #include <Servo.h>
 #endif
 
+// WiFi networking (Arduino UNO R4 WiFi). Credentials live in arduino_secrets.h,
+// which is gitignored. Copy arduino_secrets.h.example to get started.
+#include <WiFiS3.h>
+#include "arduino_secrets.h"
+
+#define FEEDER_PORT 4242 // TCP port the feeder listens on for DISPENSE commands
+
 #define DISPENSE_MILLIS 500 // milliseconds of food dispensing. 1 sec was too much food.
 #define SENSOR_HOLDOFF_MILLIS  2000 // 2 additional seconds of waiting
 #define BUTTON_HOLDOFF_MILLIS  1000 // 60000 // 60 additional seconds of waiting
@@ -67,10 +74,35 @@ Servo dispenserServo;
 // Motor Driver has no additional setup
 #endif
 
+// TCP server that listens for DISPENSE commands over the network.
+WiFiServer feederServer(FEEDER_PORT);
+
 int speedDelta = 10;
 int lastState = 0;  // variable for remembering the last IR beam status
 bool buttonArmed = false;
 int lastFeedSensorState = 0;
+
+// Join the home WiFi network and start the dispense server. Blocks until connected
+// so the feeder is always reachable once setup() completes; prints the assigned IP
+// to Serial so you can find the feeder's address.
+void connectWiFi() {
+  if (WiFi.status() == WL_NO_MODULE) {
+    Serial.println("WiFi module not found - halting.");
+    while (true) { ; } // nothing to do without WiFi
+  }
+
+  Serial.print("Connecting to WiFi: ");
+  Serial.println(SECRET_SSID);
+  while (WiFi.begin(SECRET_SSID, SECRET_PASS) != WL_CONNECTED) {
+    Serial.println("  ...retrying in 5s");
+    delay(5000);
+  }
+
+  Serial.print("Connected. Feeder IP: ");
+  Serial.println(WiFi.localIP());
+  Serial.print("Listening for DISPENSE commands on port ");
+  Serial.println(FEEDER_PORT);
+}
 
 void setup() {
   // put your setup code here, to run once:
@@ -108,8 +140,12 @@ void setup() {
   pinMode(servoPin, OUTPUT);
   // initialize feed sensor to whatever it is now. It should be clear.
   lastFeedSensorState = digitalRead(feedSensorPin);
-  
+
   #endif // USING_SERVO
+
+  // Join WiFi and start listening for network dispense commands.
+  connectWiFi();
+  feederServer.begin();
 }
 
 #ifdef USING_SERVO
