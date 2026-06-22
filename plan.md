@@ -3,6 +3,19 @@
 Working plan for implementing the design in [`spec.md`](./spec.md). Phases are ordered so
 that each one is independently testable before moving to the next.
 
+## Progress
+
+- **Phase 1 — done.** WiFi scaffold on the UNO R4 WiFi; boots, prints IP, listens on 4242.
+- **Phase 2 — done (simulation).** Network `DISPENSE`/`DONE` command handling, button as
+  manual trigger, payment-beam activation removed. A compile-time `SIMULATION_MODE`
+  (defined by default) makes dispensing a timed stub so the whole path runs on a bare
+  board with no sensors/actuators. The real flow-controlled loop is written behind the
+  `#else` and awaits hardware bring-up.
+- **Phase 3 — done.** `dispense` Python CLI; happy / refused / 10s-timeout paths verified
+  locally against a fake feeder.
+- **Next:** flash the simulation build, run `./dispense <ip>` end-to-end, then disable
+  `SIMULATION_MODE` and tune the real dispense loop on hardware (Phase 4).
+
 ## Phase 1 — Firmware networking scaffold
 
 **Goal:** the feeder joins WiFi and accepts a TCP connection on port 4242.
