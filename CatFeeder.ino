@@ -357,7 +357,7 @@ void handleNetwork() {
       client.print("ERR missing duration\n");
     } else {
       long ms = line.substring(sp + 1).toInt();
-      if (ms <= 0) {
+      if (ms <= 0 || ms > 10000) {
         client.print("ERR invalid duration\n");
       } else {
         unsigned long accrued = dispenseForDuration((unsigned long)ms);
