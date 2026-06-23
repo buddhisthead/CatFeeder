@@ -13,8 +13,14 @@ that each one is independently testable before moving to the next.
   `#else` and awaits hardware bring-up.
 - **Phase 3 — done.** `dispense` Python CLI; happy / refused / 10s-timeout paths verified
   locally against a fake feeder.
-- **Next:** flash the simulation build, run `./dispense <ip>` end-to-end, then disable
-  `SIMULATION_MODE` and tune the real dispense loop on hardware (Phase 4).
+- **Phase 4 — done (hardware).** Brought up on real hardware: 10ms→5ms sampling, button
+  is hold-to-dispense (reports food-flow ms), INPUT_PULLUP fixes for button and IR beam
+  on the R4. The dispense loop was refactored into `actuatorOn/Off`/`dispenseSample`
+  primitives, and food-flow time now measures flow *duration* (edge detection + 150ms
+  window) rather than beam-occlusion time. Verified 2490ms held → 1790ms food-flow.
+- **Phase 5 — done.** README updated to the implemented design with CLI usage, protocol,
+  compile-time options, and a cron scheduling example.
+- **Remaining cleanup:** comment out `DEBUG_SENSOR` before considering this production.
 
 ## Phase 1 — Firmware networking scaffold
 
