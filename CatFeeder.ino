@@ -69,10 +69,8 @@
 // accrued food-flow time is gated on detected flow.
 // #define USE_FLOW_SENSOR
 
-#define DEFAULT_DISPENSE_MS 800 // food-flow ms for a manual (button) dispense
-#define MAX_WALL_MS 10000       // dispense-loop wall-clock safety limit (empty hopper)
-
-#define BUTTON_HOLDOFF_MILLIS  1000 // 60000 // 60 additional seconds of waiting
+#define MAX_WALL_MS 10000     // dispense-loop wall-clock safety limit (empty hopper)
+#define SAMPLE_INTERVAL_MS 10 // dispense-loop sample period (reduce to 5 for finer resolution)
 
 const int feedSensorPin = 4; // Feed dispensed sensor (food-flow detection only)
 const int buttonPin = 7;     // Manual dispense button (open/close switch)
@@ -88,7 +86,6 @@ Servo dispenserServo;
 // TCP server that listens for DISPENSE commands over the network.
 WiFiServer feederServer(FEEDER_PORT);
 
-bool buttonArmed = false;
 int lastFeedSensorState = 0;
 
 // Join the home WiFi network and start the dispense server. Blocks until connected
@@ -263,86 +260,103 @@ void jiggle() {
 
 #endif
 
-// Dispense until targetFlowMs of *food-flow time* has accrued, or the MAX_WALL_MS
-// wall-clock safety limit is reached (the hopper is likely empty). Returns the
-// food-flow time actually accrued, in milliseconds.
-//
-// Food-flow time is accrued by sampling once per SAMPLE_INTERVAL_MS: each sample period
-// in which the beam is broken (food present) advances the accrued time by one interval;
-// periods with no food do not accrue, so an empty plate or gaps in flow don't count.
-//
-// Build modes:
-//  - SIMULATION_MODE: no motor or sensor; just wait targetFlowMs so the whole command
-//    path (CLI -> network -> reply) can be tested on a bare board.
-//  - Real, USE_FLOW_SENSOR undefined: drive the motor for the full requested duration
-//    with the sensor bypassed -- Stage A motor-only bring-up.
-//  - Real, USE_FLOW_SENSOR defined: gate accrual on the IR beam -- full flow control.
-unsigned long dispenseForDuration(unsigned long targetFlowMs) {
-#ifdef SIMULATION_MODE
+// ---------------------------------------------------------------------------
+// Dispenser primitives. All of the SIMULATION_MODE / USING_SERVO / USE_FLOW_SENSOR
+// conditionals live in these three helpers, so the dispense routines that use them
+// read cleanly and only express *when to stop*.
+// ---------------------------------------------------------------------------
 
-  Serial.print("[SIM] Dispensing for ");
-  Serial.print(targetFlowMs);
-  Serial.println(" ms");
+// Start the dispenser (motor or servo) and light the activity LED.
+void actuatorOn() {
   digitalWrite(LED_BUILTIN, HIGH);
-  delay(targetFlowMs);
-  digitalWrite(LED_BUILTIN, LOW);
-  Serial.println("[SIM] Dispense complete");
-  return targetFlowMs;
-
-#else
-
-  Serial.print("Start Dispensing for ");
-  Serial.print(targetFlowMs);
-  Serial.println(" ms of food flow");
-  digitalWrite(LED_BUILTIN, HIGH);
-
-  // Start the actuator.
+#ifndef SIMULATION_MODE
   #ifdef USING_SERVO
   dispenserServo.attach(servoPin);
-  dispenserServo.write(70); // advance (90 == stop)
+  dispenserServo.write(70);   // advance (90 == stop)
   #else
   analogWrite(servoPin, 255); // full power to the vibration motor
   #endif
+#endif
+}
 
-  // Sample once per interval; a sample period in which the beam is broken advances the
-  // accrued food-flow time by one interval. SAMPLE_INTERVAL_MS can be reduced to 5 for
-  // finer resolution.
-  const unsigned long SAMPLE_INTERVAL_MS = 10;
-  unsigned long wallStart = millis();
+// Stop the dispenser and turn the activity LED off.
+void actuatorOff() {
+#ifndef SIMULATION_MODE
+  #ifdef USING_SERVO
+  dispenserServo.write(90);   // stop
+  dispenserServo.detach();
+  #else
+  analogWrite(servoPin, 0);
+  #endif
+#endif
+  digitalWrite(LED_BUILTIN, LOW);
+}
+
+// Run one SAMPLE_INTERVAL_MS sample period and return the food-flow time to accrue for
+// it: a full interval if food is flowing past the beam, otherwise zero. In
+// SIMULATION_MODE (no sensor) or motor-only bring-up (USE_FLOW_SENSOR off) every period
+// counts, so dispensing runs for the requested wall-clock time.
+unsigned long dispenseSample() {
+#if defined(SIMULATION_MODE) || !defined(USE_FLOW_SENSOR)
+  bool foodFlowing = true;
+#else
+  bool foodFlowing = (digitalRead(feedSensorPin) == LOW); // LOW == beam broken == food present
+#endif
+  delay(SAMPLE_INTERVAL_MS);
+  return foodFlowing ? SAMPLE_INTERVAL_MS : 0;
+}
+
+// Dispense until targetFlowMs of food-flow time has accrued, or the MAX_WALL_MS
+// wall-clock safety limit is reached (the hopper is likely empty). Returns the
+// food-flow time actually accrued, in milliseconds. Used by the network and serial paths.
+unsigned long dispenseForDuration(unsigned long targetFlowMs) {
+  Serial.print("Start Dispensing for ");
+  Serial.print(targetFlowMs);
+  Serial.println(" ms of food flow");
+
+  actuatorOn();
   unsigned long accruedFlow = 0;
-
+  unsigned long wallStart = millis();
   while (accruedFlow < targetFlowMs) {
     if (millis() - wallStart >= MAX_WALL_MS) {
       Serial.println("Dispense hit wall-clock safety limit (hopper empty?)");
       break;
     }
-
-  #ifdef USE_FLOW_SENSOR
-    bool beamBroken = (digitalRead(feedSensorPin) == LOW); // LOW == beam broken == food present
-  #else
-    bool beamBroken = true; // motor-only bring-up: sensor bypassed, accrue every sample
-  #endif
-
-    delay(SAMPLE_INTERVAL_MS);
-    if (beamBroken) {
-      accruedFlow += SAMPLE_INTERVAL_MS;
-    }
+    accruedFlow += dispenseSample();
   }
+  actuatorOff();
 
-  // Stop the actuator.
-  #ifdef USING_SERVO
-  dispenserServo.write(90); // stop
-  dispenserServo.detach();
-  #else
-  analogWrite(servoPin, 0);
-  #endif
-
-  digitalWrite(LED_BUILTIN, LOW);
   Serial.print("STOP Dispensing! Accrued flow ms: ");
   Serial.println(accruedFlow);
   return accruedFlow;
+}
 
-#endif // SIMULATION_MODE
+// Dispense for as long as the button is held (active-low), bounded by the same
+// wall-clock safety limit. Returns the food-flow time accrued while held -- a handy way
+// to dial in a good dispense duration by feel.
+unsigned long dispenseWhileButtonHeld() {
+  Serial.println("Dispensing while button held");
+
+  actuatorOn();
+  unsigned long accruedFlow = 0;
+  unsigned long wallStart = millis();
+  while (digitalRead(buttonPin) == LOW) {
+    if (millis() - wallStart >= MAX_WALL_MS) {
+      Serial.println("Dispense hit wall-clock safety limit");
+      break;
+    }
+    accruedFlow += dispenseSample();
+  }
+  unsigned long elapsedMs = millis() - wallStart;
+  actuatorOff();
+
+  Serial.print("Button released after ");
+  Serial.print(elapsedMs);
+  Serial.println(" ms of dispensing");
+  Serial.print("Food-flow time (use as 'dispense -d'): ");
+  Serial.print(accruedFlow);
+  Serial.println(" ms");
+  return accruedFlow;
 }
 
 // Handle one pending network client, if any: read a single DISPENSE command line,
@@ -400,21 +414,11 @@ void loop() {
     return;
   }
 
-  // 3. Manual: the open/close switch triggers a default-duration dispense.
-  int buttonState = digitalRead(buttonPin);
-  delay(100);
-  if (buttonState == LOW && buttonArmed) {
-    buttonArmed = false;
-    Serial.println("Dispensing from button");
-    dispenseForDuration(DEFAULT_DISPENSE_MS);
-    // don't check the button until after a holdoff duration
-    delay(BUTTON_HOLDOFF_MILLIS);
-  } else if (buttonState == HIGH && buttonArmed == false) {
-    // debounce
-    delay(1000);
-    buttonState = digitalRead(buttonPin);
-    if (buttonState == HIGH) {
-      buttonArmed = true;
+  // 3. Manual: hold the button to dispense, release to stop.
+  if (digitalRead(buttonPin) == LOW) {
+    delay(20); // debounce
+    if (digitalRead(buttonPin) == LOW) {
+      dispenseWhileButtonHeld();
     }
   }
 }
