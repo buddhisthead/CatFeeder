@@ -103,15 +103,17 @@ Line-based ASCII over TCP (so you can also test with `nc <ip> 4242`):
 
 ## Scheduled feeding with cron
 
-Once the CLI works from the shell, schedule it with `cron` on the Linux machine. Example
-— feed at 7:00 am and 6:00 pm daily, logging to a file:
+Once the CLI works from the shell, schedule it with `cron` on the Linux machine. A ready
+example is in [`crontab.example`](./crontab.example) — feed at 8:00 am and 8:00 pm daily,
+logging to a file:
 
 ```cron
-0 7,18 * * *  /path/to/dispense 10.1.1.143 -d 1790 >> /var/log/catfeeder.log 2>&1
+0 8,20 * * *  /path/to/dispense 10.1.1.143 -d 1790 >> /var/log/catfeeder.log 2>&1
 ```
 
-Edit your crontab with `crontab -e`. Use an absolute path to `dispense`, and check the
-log to confirm each run reports `OK`.
+Edit it for your absolute path to `dispense`, feeder IP, and duration, then install with
+`crontab crontab.example` (or paste the line into `crontab -e`). Check the log to confirm
+each run reports `OK`.
 
 ## License
 
