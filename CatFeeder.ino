@@ -76,7 +76,7 @@
 // Debug: when defined, print IR beam state transitions to Serial so you can verify the
 // sensor wiring and polarity (wave something through the beam and watch). Comment out
 // for normal operation.
-#define DEBUG_SENSOR
+// #define DEBUG_SENSOR
 
 const int feedSensorPin = 4; // Feed dispensed sensor (food-flow detection only)
 const int buttonPin = 7;     // Manual dispense button (open/close switch)
