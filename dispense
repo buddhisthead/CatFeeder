@@ -34,13 +34,13 @@ def dispense(ip, port, duration_ms):
         sock.sendall(f"DISPENSE {duration_ms}\n".encode())
 
         # Read until we get a newline-terminated reply or the timeout fires.
-        chunks = []
-        while b"\n" not in b"".join(chunks):
+        buf = bytearray()
+        while b"\n" not in buf:
             data = sock.recv(64)
             if not data:
                 break  # feeder closed the connection without a full reply
-            chunks.append(data)
-        return b"".join(chunks).decode(errors="replace").strip()
+            buf.extend(data)
+        return buf.decode(errors="replace").strip()
 
 
 def main(argv=None):

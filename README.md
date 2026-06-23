@@ -65,7 +65,7 @@ wall-clock safety limit stops the motor if the hopper runs empty.
 | `SIMULATION_MODE`   | off         | No sensors/actuators — dispensing is a timed stub. Test the full CLI→network path on a bare board. |
 | `USE_FLOW_SENSOR`   | on          | Gate food-flow time on the IR beam. Off = run the motor for the full requested duration (motor bring-up). |
 | `USING_SERVO`       | off         | Use a servo auger instead of the vibrating trough.             |
-| `DEBUG_SENSOR`      | on          | Log IR beam transitions to Serial. Comment out for normal use. |
+| `DEBUG_SENSOR`      | off         | Uncomment to log IR beam transitions to Serial (wiring/polarity bring-up). |
 | `FEEDER_PORT`       | `4242`      | TCP port the feeder listens on.                                |
 | `SAMPLE_INTERVAL_MS`| `5`         | Flow-loop sample period.                                       |
 | `FLOW_WINDOW_MS`    | `150`       | Food counts as "flowing" while a piece passed this recently.   |

@@ -88,9 +88,9 @@
 
 #define FEEDER_PORT 4242 // TCP port the feeder listens on for DISPENSE commands
 
-// Simulation mode: build with no sensors or actuators attached so the full command
-// path (CLI -> network -> reply) can be exercised on a bare Arduino board. In this
-// mode dispensing is a timed stub. Comment this out to build for real hardware.
+// Simulation mode (off by default = real hardware). Uncomment to build with no sensors
+// or actuators attached: dispensing becomes a timed stub so the full command path
+// (CLI -> network -> reply) can be exercised on a bare Arduino board.
 // #define SIMULATION_MODE
 
 // Hardware bring-up gate (only relevant when SIMULATION_MODE is off): leave this
@@ -142,8 +142,9 @@ void connectWiFi() {
     while (true) { ; } // nothing to do without WiFi
   }
 
-  Serial.print("Connecting to WiFi: ");
-  Serial.println(SECRET_SSID);
+  // Don't echo SECRET_SSID to Serial -- it leaks the network name to anyone with
+  // serial or log access.
+  Serial.println("Connecting to WiFi...");
   while (WiFi.begin(SECRET_SSID, SECRET_PASS) != WL_CONNECTED) {
     Serial.println("  ...retrying in 5s");
     delay(5000);
@@ -444,6 +445,11 @@ unsigned long dispenseForDuration(unsigned long targetFlowMs) {
   Serial.print(targetFlowMs);
   Serial.println(" ms of food flow");
 
+  if (targetFlowMs == 0) {
+    Serial.println("STOP Dispensing! Accrued flow ms: 0");
+    return 0; // no-op: don't energize the actuator
+  }
+
   actuatorOn();
   unsigned long accruedFlow = 0;
   unsigned long wallStart = millis();
@@ -503,20 +509,24 @@ void handleNetwork() {
   Serial.print("Command: ");
   Serial.println(line);
 
-  if (line.startsWith("DISPENSE")) {
-    int sp = line.indexOf(' ');
-    if (sp < 0) {
-      client.print("ERR missing duration\n");
+  if (line.startsWith("DISPENSE ")) {
+    // Parse the duration strictly: digits only, no trailing junk ("12abc" is invalid).
+    String arg = line.substring(9); // everything after "DISPENSE "
+    arg.trim();
+    bool valid = arg.length() > 0;
+    for (unsigned int i = 0; i < arg.length(); i++) {
+      if (!isDigit(arg[i])) { valid = false; break; }
+    }
+    long ms = valid ? arg.toInt() : -1;
+
+    if (!valid || ms < 0 || ms > MAX_WALL_MS) {
+      client.print("ERR invalid duration\n");
     } else {
-      long ms = line.substring(sp + 1).toInt();
-      if (ms <= 0 || ms > 10000) {
-        client.print("ERR invalid duration\n");
-      } else {
-        unsigned long accrued = dispenseForDuration((unsigned long)ms);
-        client.print("DONE ");
-        client.print(accrued);
-        client.print("\n");
-      }
+      // 0 is a valid no-op; dispenseForDuration() returns immediately for it.
+      unsigned long accrued = dispenseForDuration((unsigned long)ms);
+      client.print("DONE ");
+      client.print(accrued);
+      client.print("\n");
     }
   } else {
     client.print("ERR unknown command\n");
