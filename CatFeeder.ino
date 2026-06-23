@@ -122,9 +122,11 @@ void setup() {
   // initialize digital pin LED_BUILTIN as an output.
   pinMode(LED_BUILTIN, OUTPUT);
   
-  // initialize the dispense pushbutton pin as an input:
-  pinMode(buttonPin, INPUT);
-  digitalWrite(buttonPin, HIGH); // turn on the pullup
+  // initialize the dispense pushbutton pin as an input with the internal pull-up.
+  // The switch is normally-open between buttonPin and GND, so idle reads HIGH and a
+  // press reads LOW. Use INPUT_PULLUP: the old AVR "INPUT + digitalWrite(HIGH)" trick
+  // does not engage the pull-up on the UNO R4 WiFi (Renesas RA4M1).
+  pinMode(buttonPin, INPUT_PULLUP);
 
   // Feed dispensed sensor
   pinMode(feedSensorPin, INPUT);     
@@ -400,6 +402,7 @@ void loop() {
 
   // 3. Manual: the open/close switch triggers a default-duration dispense.
   int buttonState = digitalRead(buttonPin);
+  delay(100);
   if (buttonState == LOW && buttonArmed) {
     buttonArmed = false;
     Serial.println("Dispensing from button");
