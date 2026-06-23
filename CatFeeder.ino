@@ -56,6 +56,9 @@
 #include <WiFiS3.h>
 #include "arduino_secrets.h"
 
+// On-board 12x8 LED matrix (bundled with the UNO R4 Boards core).
+#include "Arduino_LED_Matrix.h"
+
 #define FEEDER_PORT 4242 // TCP port the feeder listens on for DISPENSE commands
 
 // Simulation mode: build with no sensors or actuators attached so the full command
@@ -91,6 +94,9 @@ Servo dispenserServo;
 
 // TCP server that listens for DISPENSE commands over the network.
 WiFiServer feederServer(FEEDER_PORT);
+
+// On-board LED matrix: a cat face when idle, a pulsing heart while dispensing.
+ArduinoLEDMatrix matrix;
 
 int lastFeedSensorState = 0;
 
@@ -130,7 +136,11 @@ void setup() {
 
   // initialize digital pin LED_BUILTIN as an output.
   pinMode(LED_BUILTIN, OUTPUT);
-  
+
+  // start the LED matrix and show the idle cat face.
+  matrix.begin();
+  showCatFace();
+
   // initialize the dispense pushbutton pin as an input with the internal pull-up.
   // The switch is normally-open between buttonPin and GND, so idle reads HIGH and a
   // press reads LOW. Use INPUT_PULLUP: the old AVR "INPUT + digitalWrite(HIGH)" trick
@@ -276,6 +286,59 @@ void jiggle() {
 #endif
 
 // ---------------------------------------------------------------------------
+// LED matrix status display. Bitmaps are 8 rows x 12 columns; 1 = LED on. A cat face
+// shows when idle; a heart pulses (small <-> big) while dispensing.
+// ---------------------------------------------------------------------------
+
+uint8_t catFace[8][12] = {
+  {0,0,1,0,0,0,0,0,0,1,0,0},
+  {0,1,1,1,0,0,0,0,1,1,1,0},
+  {0,1,1,1,1,1,1,1,1,1,1,0},
+  {0,1,1,0,1,1,1,1,0,1,1,0},
+  {0,1,1,1,1,1,1,1,1,1,1,0},
+  {0,1,1,1,1,0,0,1,1,1,1,0},
+  {0,0,1,1,1,1,1,1,1,1,0,0},
+  {0,0,0,1,1,1,1,1,1,0,0,0}
+};
+
+uint8_t heartBig[8][12] = {
+  {0,0,1,1,0,0,0,1,1,0,0,0},
+  {0,1,1,1,1,0,1,1,1,1,0,0},
+  {0,1,1,1,1,1,1,1,1,1,1,0},
+  {0,1,1,1,1,1,1,1,1,1,1,0},
+  {0,0,1,1,1,1,1,1,1,1,0,0},
+  {0,0,0,1,1,1,1,1,1,0,0,0},
+  {0,0,0,0,1,1,1,1,0,0,0,0},
+  {0,0,0,0,0,1,1,0,0,0,0,0}
+};
+
+uint8_t heartSmall[8][12] = {
+  {0,0,0,0,0,0,0,0,0,0,0,0},
+  {0,0,0,1,1,0,1,1,0,0,0,0},
+  {0,0,0,1,1,1,1,1,1,0,0,0},
+  {0,0,0,1,1,1,1,1,1,0,0,0},
+  {0,0,0,0,1,1,1,1,0,0,0,0},
+  {0,0,0,0,0,1,1,0,0,0,0,0},
+  {0,0,0,0,0,0,0,0,0,0,0,0},
+  {0,0,0,0,0,0,0,0,0,0,0,0}
+};
+
+// Show the idle cat face.
+void showCatFace() {
+  matrix.renderBitmap(catFace, 8, 12);
+}
+
+// Pulse the heart while dispensing. Non-blocking: called once per dispense sample, it
+// swaps between the big and small heart on a ~300ms cadence so it appears to beat.
+void pulseHeartDisplay() {
+  if ((millis() / 300) % 2 == 0) {
+    matrix.renderBitmap(heartBig, 8, 12);
+  } else {
+    matrix.renderBitmap(heartSmall, 8, 12);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Dispenser primitives. All of the SIMULATION_MODE / USING_SERVO / USE_FLOW_SENSOR
 // conditionals live in these three helpers, so the dispense routines that use them
 // read cleanly and only express *when to stop*.
@@ -313,6 +376,7 @@ void actuatorOff() {
   #endif
 #endif
   digitalWrite(LED_BUILTIN, LOW);
+  showCatFace(); // back to the idle cat face
 }
 
 // Run one SAMPLE_INTERVAL_MS sample period and return the food-flow time to accrue for
@@ -325,6 +389,7 @@ void actuatorOff() {
 // whenever the beam is currently broken OR a piece passed within FLOW_WINDOW_MS -- steady
 // flow accrues at the wall-clock rate, while an empty plate or a real gap pauses accrual.
 unsigned long dispenseSample() {
+  pulseHeartDisplay(); // beat the heart on the LED matrix while dispensing
 #if defined(SIMULATION_MODE) || !defined(USE_FLOW_SENSOR)
   delay(SAMPLE_INTERVAL_MS);
   return SAMPLE_INTERVAL_MS;
