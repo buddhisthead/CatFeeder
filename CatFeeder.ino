@@ -61,7 +61,13 @@
 // Simulation mode: build with no sensors or actuators attached so the full command
 // path (CLI -> network -> reply) can be exercised on a bare Arduino board. In this
 // mode dispensing is a timed stub. Comment this out to build for real hardware.
-#define SIMULATION_MODE
+// #define SIMULATION_MODE
+
+// Hardware bring-up gate (only relevant when SIMULATION_MODE is off): leave this
+// commented out to run the motor for the full requested duration with the IR beam
+// bypassed -- Stage A, motor-only test. Uncomment once the flow sensor is wired in so
+// accrued food-flow time is gated on detected flow.
+// #define USE_FLOW_SENSOR
 
 #define DEFAULT_DISPENSE_MS 800 // food-flow ms for a manual (button) dispense
 #define MAX_WALL_MS 10000       // dispense-loop wall-clock safety limit (empty hopper)
@@ -259,9 +265,16 @@ void jiggle() {
 // wall-clock safety limit is reached (the hopper is likely empty). Returns the
 // food-flow time actually accrued, in milliseconds.
 //
-// In SIMULATION_MODE there is no motor or sensor: we simply wait targetFlowMs so the
-// whole command path (CLI -> network -> reply) can be tested on a bare board. Request
-// a duration longer than the CLI's 10s timeout to exercise the timed-out path.
+// Food-flow time is accrued by sampling once per SAMPLE_INTERVAL_MS: each sample period
+// in which the beam is broken (food present) advances the accrued time by one interval;
+// periods with no food do not accrue, so an empty plate or gaps in flow don't count.
+//
+// Build modes:
+//  - SIMULATION_MODE: no motor or sensor; just wait targetFlowMs so the whole command
+//    path (CLI -> network -> reply) can be tested on a bare board.
+//  - Real, USE_FLOW_SENSOR undefined: drive the motor for the full requested duration
+//    with the sensor bypassed -- Stage A motor-only bring-up.
+//  - Real, USE_FLOW_SENSOR defined: gate accrual on the IR beam -- full flow control.
 unsigned long dispenseForDuration(unsigned long targetFlowMs) {
 #ifdef SIMULATION_MODE
 
@@ -289,36 +302,29 @@ unsigned long dispenseForDuration(unsigned long targetFlowMs) {
   analogWrite(servoPin, 255); // full power to the vibration motor
   #endif
 
-  // Accrue elapsed time only while food is actively flowing past the beam. A piece of
-  // food momentarily breaks the beam, so we treat "flowing" as having seen a beam
-  // transition within FLOW_WINDOW_MS. Before the first piece is seen (empty plate at
-  // hopper fill) no time accrues.
-  const unsigned long FLOW_WINDOW_MS = 500;
+  // Sample once per interval; a sample period in which the beam is broken advances the
+  // accrued food-flow time by one interval. SAMPLE_INTERVAL_MS can be reduced to 5 for
+  // finer resolution.
+  const unsigned long SAMPLE_INTERVAL_MS = 10;
   unsigned long wallStart = millis();
-  unsigned long lastSample = wallStart;
-  unsigned long lastFlowSeen = 0;
   unsigned long accruedFlow = 0;
-  int lastBeam = digitalRead(feedSensorPin);
-  bool sawFood = false;
 
   while (accruedFlow < targetFlowMs) {
-    unsigned long now = millis();
-    if (now - wallStart >= MAX_WALL_MS) {
+    if (millis() - wallStart >= MAX_WALL_MS) {
       Serial.println("Dispense hit wall-clock safety limit (hopper empty?)");
       break;
     }
 
-    int beam = digitalRead(feedSensorPin);
-    if (beam != lastBeam) { // a piece of food passed the beam
-      sawFood = true;
-      lastFlowSeen = now;
-      lastBeam = beam;
-    }
+  #ifdef USE_FLOW_SENSOR
+    bool beamBroken = (digitalRead(feedSensorPin) == LOW); // LOW == beam broken == food present
+  #else
+    bool beamBroken = true; // motor-only bring-up: sensor bypassed, accrue every sample
+  #endif
 
-    if (sawFood && (now - lastFlowSeen <= FLOW_WINDOW_MS)) {
-      accruedFlow += (now - lastSample);
+    delay(SAMPLE_INTERVAL_MS);
+    if (beamBroken) {
+      accruedFlow += SAMPLE_INTERVAL_MS;
     }
-    lastSample = now;
   }
 
   // Stop the actuator.
