@@ -67,10 +67,15 @@
 // commented out to run the motor for the full requested duration with the IR beam
 // bypassed -- Stage A, motor-only test. Uncomment once the flow sensor is wired in so
 // accrued food-flow time is gated on detected flow.
-// #define USE_FLOW_SENSOR
+#define USE_FLOW_SENSOR
 
 #define MAX_WALL_MS 10000     // dispense-loop wall-clock safety limit (empty hopper)
-#define SAMPLE_INTERVAL_MS 10 // dispense-loop sample period (reduce to 5 for finer resolution)
+#define SAMPLE_INTERVAL_MS 5 // dispense-loop sample period (ms)
+
+// Debug: when defined, print IR beam state transitions to Serial so you can verify the
+// sensor wiring and polarity (wave something through the beam and watch). Comment out
+// for normal operation.
+#define DEBUG_SENSOR
 
 const int feedSensorPin = 4; // Feed dispensed sensor (food-flow detection only)
 const int buttonPin = 7;     // Manual dispense button (open/close switch)
@@ -125,9 +130,12 @@ void setup() {
   // does not engage the pull-up on the UNO R4 WiFi (Renesas RA4M1).
   pinMode(buttonPin, INPUT_PULLUP);
 
-  // Feed dispensed sensor
-  pinMode(feedSensorPin, INPUT);     
-  digitalWrite(feedSensorPin, HIGH); // turn on the pullup
+  // Feed dispensed sensor (IR breakbeam). Its output is open-collector and needs a
+  // pull-up; use INPUT_PULLUP for the same reason as the button -- the legacy
+  // digitalWrite(HIGH) trick does not engage the pull-up on the UNO R4 WiFi (Renesas
+  // RA4M1). With the pull-up, an intact beam reads HIGH and a broken beam (food
+  // passing) reads LOW.
+  pinMode(feedSensorPin, INPUT_PULLUP);
   
   #ifdef USING_SERVO
   
@@ -397,6 +405,17 @@ void handleNetwork() {
 }
 
 void loop() {
+#ifdef DEBUG_SENSOR
+  // Print the IR beam state whenever it changes, so you can confirm wiring/polarity.
+  static int lastBeamDebug = -1;
+  int beamNow = digitalRead(feedSensorPin);
+  if (beamNow != lastBeamDebug) {
+    Serial.print("Beam: ");
+    Serial.println(beamNow == LOW ? "BROKEN (food present)" : "clear");
+    lastBeamDebug = beamNow;
+  }
+#endif
+
   // 1. Network: a DISPENSE command from the dispense CLI over TCP.
   handleNetwork();
 
