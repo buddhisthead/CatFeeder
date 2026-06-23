@@ -70,7 +70,8 @@
 #define USE_FLOW_SENSOR
 
 #define MAX_WALL_MS 10000     // dispense-loop wall-clock safety limit (empty hopper)
-#define SAMPLE_INTERVAL_MS 5 // dispense-loop sample period (ms)
+#define SAMPLE_INTERVAL_MS 5  // dispense-loop sample period (ms)
+#define FLOW_WINDOW_MS 150    // food counts as "flowing" while a piece passed this recently
 
 // Debug: when defined, print IR beam state transitions to Serial so you can verify the
 // sensor wiring and polarity (wave something through the beam and watch). Comment out
@@ -92,6 +93,12 @@ Servo dispenserServo;
 WiFiServer feederServer(FEEDER_PORT);
 
 int lastFeedSensorState = 0;
+
+// Flow-detection state, reset by actuatorOn() at the start of each dispense. A kibble
+// shows as a HIGH->LOW beam edge; food is "flowing" while pieces keep arriving.
+int flowPrevBeam = HIGH;
+unsigned long flowLastPieceMs = 0;
+bool flowSawPiece = false;
 
 // Join the home WiFi network and start the dispense server. Blocks until connected
 // so the feeder is always reachable once setup() completes; prints the assigned IP
@@ -277,6 +284,14 @@ void jiggle() {
 // Start the dispenser (motor or servo) and light the activity LED.
 void actuatorOn() {
   digitalWrite(LED_BUILTIN, HIGH);
+
+  // Reset flow tracking for this dispense.
+  flowSawPiece = false;
+  flowLastPieceMs = 0;
+#ifdef USE_FLOW_SENSOR
+  flowPrevBeam = digitalRead(feedSensorPin);
+#endif
+
 #ifndef SIMULATION_MODE
   #ifdef USING_SERVO
   dispenserServo.attach(servoPin);
@@ -301,17 +316,32 @@ void actuatorOff() {
 }
 
 // Run one SAMPLE_INTERVAL_MS sample period and return the food-flow time to accrue for
-// it: a full interval if food is flowing past the beam, otherwise zero. In
-// SIMULATION_MODE (no sensor) or motor-only bring-up (USE_FLOW_SENSOR off) every period
-// counts, so dispensing runs for the requested wall-clock time.
+// it: a full interval if food is flowing, otherwise zero. In SIMULATION_MODE (no sensor)
+// or motor-only bring-up (USE_FLOW_SENSOR off) every period counts, so dispensing runs
+// for the requested wall-clock time.
+//
+// With the flow sensor, kibble passes as discrete pieces, so the beam is only blocked a
+// small fraction of the time even during good flow. We therefore treat food as "flowing"
+// whenever the beam is currently broken OR a piece passed within FLOW_WINDOW_MS -- steady
+// flow accrues at the wall-clock rate, while an empty plate or a real gap pauses accrual.
 unsigned long dispenseSample() {
 #if defined(SIMULATION_MODE) || !defined(USE_FLOW_SENSOR)
-  bool foodFlowing = true;
-#else
-  bool foodFlowing = (digitalRead(feedSensorPin) == LOW); // LOW == beam broken == food present
-#endif
   delay(SAMPLE_INTERVAL_MS);
-  return foodFlowing ? SAMPLE_INTERVAL_MS : 0;
+  return SAMPLE_INTERVAL_MS;
+#else
+  int beam = digitalRead(feedSensorPin);    // LOW == beam broken == food present
+  if (beam == LOW && flowPrevBeam == HIGH) { // a piece just entered the beam
+    flowSawPiece = true;
+    flowLastPieceMs = millis();
+  }
+  flowPrevBeam = beam;
+
+  delay(SAMPLE_INTERVAL_MS);
+
+  bool flowing = (beam == LOW) ||
+                 (flowSawPiece && (millis() - flowLastPieceMs <= FLOW_WINDOW_MS));
+  return flowing ? SAMPLE_INTERVAL_MS : 0;
+#endif
 }
 
 // Dispense until targetFlowMs of food-flow time has accrued, or the MAX_WALL_MS
