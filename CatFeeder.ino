@@ -33,15 +33,42 @@
 //
 // Electronics
 // -----------
-// I used an Arduino UNO, but this code will work on nearly any arduino with enough pins
-// for your needs. You need three digital inputs and one PWM output. I used two IR breakbeam
-// detectors: one for sensing payment and one for sending food reward. The PWM output is used
-// to drive a servo for an auger or a DC motor driver for a vibrating feed trough. I prefer
-// the later because it jams less often and has more precise control over the amount of food
-// dispensed.
+// Board: Arduino UNO R4 WiFi. The sketch uses two digital inputs (a button and one IR
+// breakbeam for food-flow detection) and one PWM output (the motor/servo driver). The
+// on-board 12x8 LED matrix shows status and needs no external wiring.
 //
-// TODO: describe the circuit
-// 
+// Circuit
+// -------
+// Pin map:
+//   D4  - IR breakbeam signal   (INPUT_PULLUP)
+//   D7  - dispense button       (INPUT_PULLUP)
+//   D9  - PWM to motor driver   (analogWrite; or a servo if USING_SERVO)
+//   on-board 12x8 LED matrix    - status display (no external wiring)
+//
+// Button (normally-open momentary switch between D7 and GND):
+//
+//   D7 ----o/ o---- GND      idle: D7 = HIGH (held by the internal pull-up)
+//                            pressed: D7 = LOW
+//
+// IR breakbeam (emitter + receiver straddling the dispense chute):
+//
+//   +5V --- emitter (+)           receiver (+)   --- +5V
+//   GND --- emitter (-)           receiver (-)   --- GND
+//                                 receiver (sig) --- D4
+//   Beam intact: D4 = HIGH.  A kibble breaking the beam pulls D4 LOW
+//   (the receiver output is open-collector, held HIGH by the internal pull-up).
+//
+// Vibrating-trough motor via a logic-level MOSFET (low-side switch):
+//
+//   D9 ---[ ~220R ]--- GATE
+//                      DRAIN  --- motor (-)
+//                      SOURCE --- GND
+//   motor (+) --- Vmotor supply (+)        // motor has its own supply; share GND
+//   flyback diode across the motor, cathode to motor (+)   // clamps inductive kickback
+//
+//   Alternatively, #define USING_SERVO to drive a hobby servo's signal from D9 (with
+//   the servo powered from +5V/GND) to turn an auger instead of a vibrating trough.
+//
 
 // To use a servo, uncomment the following. You can attach an auger to the servo instead of
 // using a vibrating feed trough.
