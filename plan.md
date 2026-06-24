@@ -3,6 +3,25 @@
 Working plan for implementing the design in [`spec.md`](./spec.md). Phases are ordered so
 that each one is independently testable before moving to the next.
 
+## Progress
+
+- **Phase 1 — done.** WiFi scaffold on the UNO R4 WiFi; boots, prints IP, listens on 4242.
+- **Phase 2 — done (simulation).** Network `DISPENSE`/`DONE` command handling, button as
+  manual trigger, payment-beam activation removed. A compile-time `SIMULATION_MODE`
+  (now off — real hardware; uncomment to test on a bare board) makes dispensing a timed
+  stub so the whole path runs with no sensors/actuators. The real flow-controlled loop is
+  written behind the `#else` and awaits hardware bring-up.
+- **Phase 3 — done.** `dispense` Python CLI; happy / refused / 10s-timeout paths verified
+  locally against a fake feeder.
+- **Phase 4 — done (hardware).** Brought up on real hardware: 10ms→5ms sampling, button
+  is hold-to-dispense (reports food-flow ms), INPUT_PULLUP fixes for button and IR beam
+  on the R4. The dispense loop was refactored into `actuatorOn/Off`/`dispenseSample`
+  primitives, and food-flow time now measures flow *duration* (edge detection + 150ms
+  window) rather than beam-occlusion time. Verified 2490ms held → 1790ms food-flow.
+- **Phase 5 — done.** README updated to the implemented design with CLI usage, protocol,
+  compile-time options, and a cron scheduling example.
+- **Production cleanup:** done — `DEBUG_SENSOR` is commented out.
+
 ## Phase 1 — Firmware networking scaffold
 
 **Goal:** the feeder joins WiFi and accepts a TCP connection on port 4242.

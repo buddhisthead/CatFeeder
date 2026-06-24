@@ -1,0 +1,16 @@
+# CatFeeder feeding schedule.
+#
+# Install with:   crontab crontab.example      (replaces your crontab)
+# or paste the line below into:   crontab -e
+#
+# Edit before installing:
+#   - use an absolute path to the `dispense` script
+#   - set your feeder's IP address
+#   - set -d to your dialed-in food-flow duration in milliseconds
+#
+# Output is appended to a log so you can confirm each run reported OK.
+#
+# Field order:  minute hour day-of-month month day-of-week  command
+
+# Feed the cats at 8:00 am and 8:00 pm every day.
+0 8,20 * * *  /path/to/dispense 10.1.1.143 -d 1790 >> /var/log/catfeeder.log 2>&1

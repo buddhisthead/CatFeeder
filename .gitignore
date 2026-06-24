@@ -11,5 +11,8 @@ build/
 .vscode/
 *.tmp
 
+# WiFi credentials — copy arduino_secrets.h.example to arduino_secrets.h
+arduino_secrets.h
+
 # macOS
 .DS_Store

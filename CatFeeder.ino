@@ -33,15 +33,42 @@
 //
 // Electronics
 // -----------
-// I used an Arduino UNO, but this code will work on nearly any arduino with enough pins
-// for your needs. You need three digital inputs and one PWM output. I used two IR breakbeam
-// detectors: one for sensing payment and one for sending food reward. The PWM output is used
-// to drive a servo for an auger or a DC motor driver for a vibrating feed trough. I prefer
-// the later because it jams less often and has more precise control over the amount of food
-// dispensed.
+// Board: Arduino UNO R4 WiFi. The sketch uses two digital inputs (a button and one IR
+// breakbeam for food-flow detection) and one PWM output (the motor/servo driver). The
+// on-board 12x8 LED matrix shows status and needs no external wiring.
 //
-// TODO: describe the circuit
-// 
+// Circuit
+// -------
+// Pin map:
+//   D4  - IR breakbeam signal   (INPUT_PULLUP)
+//   D7  - dispense button       (INPUT_PULLUP)
+//   D9  - PWM to motor driver   (analogWrite; or a servo if USING_SERVO)
+//   on-board 12x8 LED matrix    - status display (no external wiring)
+//
+// Button (normally-open momentary switch between D7 and GND):
+//
+//   D7 ----o/ o---- GND      idle: D7 = HIGH (held by the internal pull-up)
+//                            pressed: D7 = LOW
+//
+// IR breakbeam (emitter + receiver straddling the dispense chute):
+//
+//   +5V --- emitter (+)           receiver (+)   --- +5V
+//   GND --- emitter (-)           receiver (-)   --- GND
+//                                 receiver (sig) --- D4
+//   Beam intact: D4 = HIGH.  A kibble breaking the beam pulls D4 LOW
+//   (the receiver output is open-collector, held HIGH by the internal pull-up).
+//
+// Vibrating-trough motor via a logic-level MOSFET (low-side switch):
+//
+//   D9 ---[ ~220R ]--- GATE
+//                      DRAIN  --- motor (-)
+//                      SOURCE --- GND
+//   motor (+) --- Vmotor supply (+)        // motor has its own supply; share GND
+//   flyback diode across the motor, cathode to motor (+)   // clamps inductive kickback
+//
+//   Alternatively, #define USING_SERVO to drive a hobby servo's signal from D9 (with
+//   the servo powered from +5V/GND) to turn an auger instead of a vibrating trough.
+//
 
 // To use a servo, uncomment the following. You can attach an auger to the servo instead of
 // using a vibrating feed trough.
@@ -51,14 +78,39 @@
 #include <Servo.h>
 #endif
 
-#define DISPENSE_MILLIS 500 // milliseconds of food dispensing. 1 sec was too much food.
-#define SENSOR_HOLDOFF_MILLIS  2000 // 2 additional seconds of waiting
-#define BUTTON_HOLDOFF_MILLIS  1000 // 60000 // 60 additional seconds of waiting
+// WiFi networking (Arduino UNO R4 WiFi). Credentials live in arduino_secrets.h,
+// which is gitignored. Copy arduino_secrets.h.example to get started.
+#include <WiFiS3.h>
+#include "arduino_secrets.h"
 
-const int beamSensorPin = 8; // Payment sensor (reversed for development)
-const int feedSensorPin = 4; // Feed dispensed sensor
-const int buttonPin = 7;     // Perch sensor
-const int servoPin = 9;      // Drive either a server or the vibrator motor driver
+// On-board 12x8 LED matrix (bundled with the UNO R4 Boards core).
+#include "Arduino_LED_Matrix.h"
+
+#define FEEDER_PORT 4242 // TCP port the feeder listens on for DISPENSE commands
+
+// Simulation mode (off by default = real hardware). Uncomment to build with no sensors
+// or actuators attached: dispensing becomes a timed stub so the full command path
+// (CLI -> network -> reply) can be exercised on a bare Arduino board.
+// #define SIMULATION_MODE
+
+// Hardware bring-up gate (only relevant when SIMULATION_MODE is off): leave this
+// commented out to run the motor for the full requested duration with the IR beam
+// bypassed -- Stage A, motor-only test. Uncomment once the flow sensor is wired in so
+// accrued food-flow time is gated on detected flow.
+#define USE_FLOW_SENSOR
+
+#define MAX_WALL_MS 10000     // dispense-loop wall-clock safety limit (empty hopper)
+#define SAMPLE_INTERVAL_MS 5  // dispense-loop sample period (ms)
+#define FLOW_WINDOW_MS 150    // food counts as "flowing" while a piece passed this recently
+
+// Debug: when defined, print IR beam state transitions to Serial so you can verify the
+// sensor wiring and polarity (wave something through the beam and watch). Comment out
+// for normal operation.
+// #define DEBUG_SENSOR
+
+const int feedSensorPin = 4; // Feed dispensed sensor (food-flow detection only)
+const int buttonPin = 7;     // Manual dispense button (open/close switch)
+const int servoPin = 9;      // Drive either a servo or the vibrator motor driver
 
 #ifdef USING_SERVO
 // Servo Driver
@@ -67,10 +119,42 @@ Servo dispenserServo;
 // Motor Driver has no additional setup
 #endif
 
-int speedDelta = 10;
-int lastState = 0;  // variable for remembering the last IR beam status
-bool buttonArmed = false;
+// TCP server that listens for DISPENSE commands over the network.
+WiFiServer feederServer(FEEDER_PORT);
+
+// On-board LED matrix: a cat face when idle, a pulsing heart while dispensing.
+ArduinoLEDMatrix matrix;
+
 int lastFeedSensorState = 0;
+
+// Flow-detection state, reset by actuatorOn() at the start of each dispense. A kibble
+// shows as a HIGH->LOW beam edge; food is "flowing" while pieces keep arriving.
+int flowPrevBeam = HIGH;
+unsigned long flowLastPieceMs = 0;
+bool flowSawPiece = false;
+
+// Join the home WiFi network and start the dispense server. Blocks until connected
+// so the feeder is always reachable once setup() completes; prints the assigned IP
+// to Serial so you can find the feeder's address.
+void connectWiFi() {
+  if (WiFi.status() == WL_NO_MODULE) {
+    Serial.println("WiFi module not found - halting.");
+    while (true) { ; } // nothing to do without WiFi
+  }
+
+  // Don't echo SECRET_SSID to Serial -- it leaks the network name to anyone with
+  // serial or log access.
+  Serial.println("Connecting to WiFi...");
+  while (WiFi.begin(SECRET_SSID, SECRET_PASS) != WL_CONNECTED) {
+    Serial.println("  ...retrying in 5s");
+    delay(5000);
+  }
+
+  Serial.print("Connected. Feeder IP: ");
+  Serial.println(WiFi.localIP());
+  Serial.print("Listening for DISPENSE commands on port ");
+  Serial.println(FEEDER_PORT);
+}
 
 void setup() {
   // put your setup code here, to run once:
@@ -80,18 +164,23 @@ void setup() {
 
   // initialize digital pin LED_BUILTIN as an output.
   pinMode(LED_BUILTIN, OUTPUT);
-  
-  // initialize the dispense pushbutton pin as an input:
-  pinMode(buttonPin, INPUT);
-  digitalWrite(buttonPin, HIGH); // turn on the pullup
 
-  // The Payment sensor
-  pinMode(beamSensorPin, INPUT);     
-  digitalWrite(beamSensorPin, HIGH); // turn on the pullup
+  // start the LED matrix and show the idle cat face.
+  matrix.begin();
+  showCatFace();
 
-  // Feed dispensed sensor
-  pinMode(feedSensorPin, INPUT);     
-  digitalWrite(feedSensorPin, HIGH); // turn on the pullup
+  // initialize the dispense pushbutton pin as an input with the internal pull-up.
+  // The switch is normally-open between buttonPin and GND, so idle reads HIGH and a
+  // press reads LOW. Use INPUT_PULLUP: the old AVR "INPUT + digitalWrite(HIGH)" trick
+  // does not engage the pull-up on the UNO R4 WiFi (Renesas RA4M1).
+  pinMode(buttonPin, INPUT_PULLUP);
+
+  // Feed dispensed sensor (IR breakbeam). Its output is open-collector and needs a
+  // pull-up; use INPUT_PULLUP for the same reason as the button -- the legacy
+  // digitalWrite(HIGH) trick does not engage the pull-up on the UNO R4 WiFi (Renesas
+  // RA4M1). With the pull-up, an intact beam reads HIGH and a broken beam (food
+  // passing) reads LOW.
+  pinMode(feedSensorPin, INPUT_PULLUP);
   
   #ifdef USING_SERVO
   
@@ -108,9 +197,19 @@ void setup() {
   pinMode(servoPin, OUTPUT);
   // initialize feed sensor to whatever it is now. It should be clear.
   lastFeedSensorState = digitalRead(feedSensorPin);
-  
+
   #endif // USING_SERVO
+
+  // Join WiFi and start listening for network dispense commands.
+  connectWiFi();
+  feederServer.begin();
 }
+
+// ---------------------------------------------------------------------------
+// Legacy hardware dispense routines, retained for reference during bring-up.
+// Activation now flows through dispenseForDuration() (defined below); these are
+// not called yet and will be reconciled when we tune the real flow-control loop.
+// ---------------------------------------------------------------------------
 
 #ifdef USING_SERVO
 
@@ -214,71 +313,263 @@ void jiggle() {
 
 #endif
 
-void loop() {
+// ---------------------------------------------------------------------------
+// LED matrix status display. Bitmaps are 8 rows x 12 columns; 1 = LED on. A cat face
+// shows when idle; a heart pulses (small <-> big) while dispensing.
+// ---------------------------------------------------------------------------
 
+uint8_t catFace[8][12] = {
+  {0,0,1,0,0,0,0,0,0,1,0,0},
+  {0,1,1,1,0,0,0,0,1,1,1,0},
+  {0,1,1,1,1,1,1,1,1,1,1,0},
+  {0,1,1,0,1,1,1,1,0,1,1,0},
+  {0,1,1,1,1,1,1,1,1,1,1,0},
+  {0,1,1,1,1,0,0,1,1,1,1,0},
+  {0,0,1,1,1,1,1,1,1,1,0,0},
+  {0,0,0,1,1,1,1,1,1,0,0,0}
+};
 
-  
-  // put your main code here, to run repeatedly:
-  if (Serial.available() > 0) {
-    // read incoming serial data:
-    char inChar = Serial.read();
-    // Echo the value back to the monitor
-    Serial.println(inChar);
+uint8_t heartBig[8][12] = {
+  {0,0,1,1,0,0,0,1,1,0,0,0},
+  {0,1,1,1,1,0,1,1,1,1,0,0},
+  {0,1,1,1,1,1,1,1,1,1,1,0},
+  {0,1,1,1,1,1,1,1,1,1,1,0},
+  {0,0,1,1,1,1,1,1,1,1,0,0},
+  {0,0,0,1,1,1,1,1,1,0,0,0},
+  {0,0,0,0,1,1,1,1,0,0,0,0},
+  {0,0,0,0,0,1,1,0,0,0,0,0}
+};
 
-    int value = inChar - '0';
-    Serial.println(value);
-    
-    if (value >= 0 && value <= 9) {
-      speedDelta = value * 10;
-      Serial.println(speedDelta);
-      dispense(speedDelta, DISPENSE_MILLIS);
+uint8_t heartSmall[8][12] = {
+  {0,0,0,0,0,0,0,0,0,0,0,0},
+  {0,0,0,1,1,0,1,1,0,0,0,0},
+  {0,0,0,1,1,1,1,1,1,0,0,0},
+  {0,0,0,1,1,1,1,1,1,0,0,0},
+  {0,0,0,0,1,1,1,1,0,0,0,0},
+  {0,0,0,0,0,1,1,0,0,0,0,0},
+  {0,0,0,0,0,0,0,0,0,0,0,0},
+  {0,0,0,0,0,0,0,0,0,0,0,0}
+};
+
+// Show the idle cat face.
+void showCatFace() {
+  matrix.renderBitmap(catFace, 8, 12);
+}
+
+// Pulse the heart while dispensing. Non-blocking: called once per dispense sample, it
+// swaps between the big and small heart on a ~300ms cadence so it appears to beat.
+void pulseHeartDisplay() {
+  if ((millis() / 300) % 2 == 0) {
+    matrix.renderBitmap(heartBig, 8, 12);
+  } else {
+    matrix.renderBitmap(heartSmall, 8, 12);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Dispenser primitives. All of the SIMULATION_MODE / USING_SERVO / USE_FLOW_SENSOR
+// conditionals live in these three helpers, so the dispense routines that use them
+// read cleanly and only express *when to stop*.
+// ---------------------------------------------------------------------------
+
+// Start the dispenser (motor or servo) and light the activity LED.
+void actuatorOn() {
+  digitalWrite(LED_BUILTIN, HIGH);
+
+  // Reset flow tracking for this dispense.
+  flowSawPiece = false;
+  flowLastPieceMs = 0;
+#ifdef USE_FLOW_SENSOR
+  flowPrevBeam = digitalRead(feedSensorPin);
+#endif
+
+#ifndef SIMULATION_MODE
+  #ifdef USING_SERVO
+  dispenserServo.attach(servoPin);
+  dispenserServo.write(70);   // advance (90 == stop)
+  #else
+  analogWrite(servoPin, 255); // full power to the vibration motor
+  #endif
+#endif
+}
+
+// Stop the dispenser and turn the activity LED off.
+void actuatorOff() {
+#ifndef SIMULATION_MODE
+  #ifdef USING_SERVO
+  dispenserServo.write(90);   // stop
+  dispenserServo.detach();
+  #else
+  analogWrite(servoPin, 0);
+  #endif
+#endif
+  digitalWrite(LED_BUILTIN, LOW);
+  showCatFace(); // back to the idle cat face
+}
+
+// Run one SAMPLE_INTERVAL_MS sample period and return the food-flow time to accrue for
+// it: a full interval if food is flowing, otherwise zero. In SIMULATION_MODE (no sensor)
+// or motor-only bring-up (USE_FLOW_SENSOR off) every period counts, so dispensing runs
+// for the requested wall-clock time.
+//
+// With the flow sensor, kibble passes as discrete pieces, so the beam is only blocked a
+// small fraction of the time even during good flow. We therefore treat food as "flowing"
+// whenever the beam is currently broken OR a piece passed within FLOW_WINDOW_MS -- steady
+// flow accrues at the wall-clock rate, while an empty plate or a real gap pauses accrual.
+unsigned long dispenseSample() {
+  pulseHeartDisplay(); // beat the heart on the LED matrix while dispensing
+#if defined(SIMULATION_MODE) || !defined(USE_FLOW_SENSOR)
+  delay(SAMPLE_INTERVAL_MS);
+  return SAMPLE_INTERVAL_MS;
+#else
+  int beam = digitalRead(feedSensorPin);    // LOW == beam broken == food present
+  if (beam == LOW && flowPrevBeam == HIGH) { // a piece just entered the beam
+    flowSawPiece = true;
+    flowLastPieceMs = millis();
+  }
+  flowPrevBeam = beam;
+
+  delay(SAMPLE_INTERVAL_MS);
+
+  bool flowing = (beam == LOW) ||
+                 (flowSawPiece && (millis() - flowLastPieceMs <= FLOW_WINDOW_MS));
+  return flowing ? SAMPLE_INTERVAL_MS : 0;
+#endif
+}
+
+// Dispense until targetFlowMs of food-flow time has accrued, or the MAX_WALL_MS
+// wall-clock safety limit is reached (the hopper is likely empty). Returns the
+// food-flow time actually accrued, in milliseconds. Used by the network and serial paths.
+unsigned long dispenseForDuration(unsigned long targetFlowMs) {
+  Serial.print("Start Dispensing for ");
+  Serial.print(targetFlowMs);
+  Serial.println(" ms of food flow");
+
+  if (targetFlowMs == 0) {
+    Serial.println("STOP Dispensing! Accrued flow ms: 0");
+    return 0; // no-op: don't energize the actuator
+  }
+
+  actuatorOn();
+  unsigned long accruedFlow = 0;
+  unsigned long wallStart = millis();
+  while (accruedFlow < targetFlowMs) {
+    if (millis() - wallStart >= MAX_WALL_MS) {
+      Serial.println("Dispense hit wall-clock safety limit (hopper empty?)");
+      break;
+    }
+    accruedFlow += dispenseSample();
+  }
+  actuatorOff();
+
+  Serial.print("STOP Dispensing! Accrued flow ms: ");
+  Serial.println(accruedFlow);
+  return accruedFlow;
+}
+
+// Dispense for as long as the button is held (active-low), bounded by the same
+// wall-clock safety limit. Returns the food-flow time accrued while held -- a handy way
+// to dial in a good dispense duration by feel.
+unsigned long dispenseWhileButtonHeld() {
+  Serial.println("Dispensing while button held");
+
+  actuatorOn();
+  unsigned long accruedFlow = 0;
+  unsigned long wallStart = millis();
+  while (digitalRead(buttonPin) == LOW) {
+    if (millis() - wallStart >= MAX_WALL_MS) {
+      Serial.println("Dispense hit wall-clock safety limit");
+      break;
+    }
+    accruedFlow += dispenseSample();
+  }
+  unsigned long elapsedMs = millis() - wallStart;
+  actuatorOff();
+
+  Serial.print("Button released after ");
+  Serial.print(elapsedMs);
+  Serial.println(" ms of dispensing");
+  Serial.print("Food-flow time (use as 'dispense -d'): ");
+  Serial.print(accruedFlow);
+  Serial.println(" ms");
+  return accruedFlow;
+}
+
+// Handle one pending network client, if any: read a single DISPENSE command line,
+// run the dispense, and reply with DONE <accrued_ms> or ERR <reason>.
+void handleNetwork() {
+  WiFiClient client = feederServer.available();
+  if (!client) {
+    return;
+  }
+
+  Serial.println("Client connected");
+  String line = client.readStringUntil('\n');
+  line.trim();
+  Serial.print("Command: ");
+  Serial.println(line);
+
+  if (line.startsWith("DISPENSE ")) {
+    // Parse the duration strictly: digits only, no trailing junk ("12abc" is invalid).
+    String arg = line.substring(9); // everything after "DISPENSE "
+    arg.trim();
+    bool valid = arg.length() > 0;
+    for (unsigned int i = 0; i < arg.length(); i++) {
+      if (!isDigit(arg[i])) { valid = false; break; }
+    }
+    long ms = valid ? arg.toInt() : -1;
+
+    if (!valid || ms < 0 || ms > MAX_WALL_MS) {
+      client.print("ERR invalid duration\n");
     } else {
-      Serial.println("Out of range: ");
-      Serial.println(value);
+      // 0 is a valid no-op; dispenseForDuration() returns immediately for it.
+      unsigned long accrued = dispenseForDuration((unsigned long)ms);
+      client.print("DONE ");
+      client.print(accrued);
+      client.print("\n");
     }
   } else {
-    // check if the pushbutton is pressed.
-    // if it is, the buttonState is LOW:
-    // read the state of the pushbutton value:
-    int buttonState = digitalRead(buttonPin);
-    if (buttonState == LOW && buttonArmed) {
-      buttonArmed = false;
-      jiggle();
-      // dispense food
-      Serial.println("Dispensing from button");
-      dispense(speedDelta, DISPENSE_MILLIS);
-      // don't check the button until after a holdoff duration
-      delay(BUTTON_HOLDOFF_MILLIS);
-    } else if (buttonState == HIGH && buttonArmed == false) {
-      // debounce
-      delay(1000);
-      buttonState = digitalRead(buttonPin);
-      if (buttonState == HIGH) {
-        buttonArmed = true;
-      }
-    }
+    client.print("ERR unknown command\n");
+  }
 
-    // check if the sensor beam is broken
-    // if it is, the sensorState is LOW:
-    // read the state of the IR sensor:
-    int sensorState = digitalRead(beamSensorPin);
-    if (sensorState && !lastState) {
-      Serial.println("Payment Beam Unbroken");
-    } 
-    if (!sensorState && lastState) {
-      Serial.println("Payment Beam Broken");
-    }
-    
-    if (sensorState == LOW && lastState != sensorState) {
-      // agitate food first
-      jiggle();
-      // dispense food
-      Serial.println("Dispensing from payment sensor");
-      dispense(speedDelta, DISPENSE_MILLIS);
-      // don't accept new requests to dispense until after a holdoff duration
-      delay(SENSOR_HOLDOFF_MILLIS);
-    }
+  client.stop();
+  Serial.println("Client disconnected");
+}
 
-    lastState = sensorState;
+void loop() {
+#ifdef DEBUG_SENSOR
+  // Print the IR beam state whenever it changes, so you can confirm wiring/polarity.
+  static int lastBeamDebug = -1;
+  int beamNow = digitalRead(feedSensorPin);
+  if (beamNow != lastBeamDebug) {
+    Serial.print("Beam: ");
+    Serial.println(beamNow == LOW ? "BROKEN (food present)" : "clear");
+    lastBeamDebug = beamNow;
+  }
+#endif
+
+  // 1. Network: a DISPENSE command from the dispense CLI over TCP.
+  handleNetwork();
+
+  // 2. Serial: type a digit 1-9 in the Serial Monitor to dispense that many hundred
+  //    ms of food-flow time (e.g. '8' -> 800 ms). Handy for local testing.
+  if (Serial.available() > 0) {
+    char inChar = Serial.read();
+    int value = inChar - '0';
+    if (value >= 1 && value <= 9) {
+      Serial.print("Dispensing from serial: ");
+      Serial.print(value * 100);
+      Serial.println(" ms");
+      dispenseForDuration(value * 100);
+    }
+    return;
+  }
+
+  // 3. Manual: hold the button to dispense, release to stop.
+  if (digitalRead(buttonPin) == LOW) {
+    delay(20); // debounce
+    if (digitalRead(buttonPin) == LOW) {
+      dispenseWhileButtonHeld();
+    }
   }
 }
