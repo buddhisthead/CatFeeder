@@ -150,7 +150,15 @@ void connectWiFi() {
     delay(5000);
   }
 
-  Serial.print("Connected. Feeder IP: ");
+  // Associated, but DHCP may not have handed out a lease yet -- WiFi.begin()
+  // returns the instant the link comes up, before localIP() is valid. Wait for a
+  // real address so we don't report (and listen on) 0.0.0.0.
+  Serial.println("Connected. Waiting for DHCP lease...");
+  while (WiFi.localIP() == IPAddress(0, 0, 0, 0)) {
+    delay(250);
+  }
+
+  Serial.print("Feeder IP: ");
   Serial.println(WiFi.localIP());
   Serial.print("Listening for DISPENSE commands on port ");
   Serial.println(FEEDER_PORT);
