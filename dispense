@@ -17,10 +17,17 @@ Examples:
 import argparse
 import socket
 import sys
+from datetime import datetime
 
 DEFAULT_PORT = 4242
 DEFAULT_DURATION_MS = 800
 REPLY_TIMEOUT_S = 10
+
+
+def log(message):
+    """Print a message prefixed with the current local date and time."""
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{timestamp}] {message}")
 
 
 def dispense(ip, port, duration_ms):
@@ -63,19 +70,19 @@ def main(argv=None):
     try:
         reply = dispense(args.ip, args.port, args.duration)
     except socket.timeout:
-        print(f"ERROR: no reply from {target} within {REPLY_TIMEOUT_S}s (timed out)")
+        log(f"ERROR: no reply from {target} within {REPLY_TIMEOUT_S}s (timed out)")
         return 1
     except OSError as exc:
-        print(f"ERROR: could not reach {target}: {exc}")
+        log(f"ERROR: could not reach {target}: {exc}")
         return 1
 
     if reply.startswith("DONE"):
-        print(f"OK: {target} dispensed ({reply})")
+        log(f"OK: {target} dispensed ({reply})")
         return 0
     if reply.startswith("ERR"):
-        print(f"ERROR: feeder rejected command: {reply}")
+        log(f"ERROR: feeder rejected command: {reply}")
         return 2
-    print(f"ERROR: unexpected reply from {target}: {reply!r}")
+    log(f"ERROR: unexpected reply from {target}: {reply!r}")
     return 2
 
 
